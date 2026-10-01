@@ -42,7 +42,6 @@ The required status check name is `<caller job id> / <template job>`, e.g. `ci /
 
 ## Access
 
-This repo is private; Actions access is set to `user` so other RIPRODUCTIONS repos can call it:
-`gh api -X PUT repos/RIPRODUCTIONS/ci-templates/actions/permissions/access -f access_level=user`.
+This repo is public so both public and private RIPRODUCTIONS repos can call it. It contains only generic workflow steps — never add secrets or project-specific values here.
 
 Validate changes with `actionlint` before pushing.
