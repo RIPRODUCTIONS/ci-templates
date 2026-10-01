@@ -1,0 +1,8 @@
+
+# --- baseline: secrets + build artifacts (RIPRODUCTIONS) ---
+.env
+.env.*
+*.db
+node_modules/
+dist/
+!.env.example
