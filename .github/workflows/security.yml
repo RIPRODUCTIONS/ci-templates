@@ -1,0 +1,95 @@
+# Reusable, NON-BLOCKING dependency audit. Findings go to the job summary;
+# the job never fails the caller (continue-on-error at job level).
+# Ecosystems are auto-detected: npm (package-lock.json), pnpm (pnpm-lock.yaml), pip (requirements*.txt / pyproject.toml).
+name: security
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: 'JSON runner spec, e.g. "ubuntu-latest" or ["self-hosted","linux","x64"]'
+        type: string
+        default: '"ubuntu-latest"'
+      node-version:
+        type: string
+        default: "22"
+      python-version:
+        type: string
+        default: "3.12"
+      working-directory:
+        type: string
+        default: "."
+      audit-level:
+        description: npm/pnpm audit threshold
+        type: string
+        default: high
+      timeout-minutes:
+        type: number
+        default: 15
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    continue-on-error: true
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-security-${{ inputs.working-directory }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: npm audit
+        if: hashFiles(format('{0}/package-lock.json', inputs.working-directory)) != ''
+        env:
+          LEVEL: ${{ inputs.audit-level }}
+        run: |
+          set +e
+          npm audit --omit=dev --audit-level="$LEVEL" > "$RUNNER_TEMP/npm-audit.txt" 2>&1
+          rc=$?
+          { echo "### npm audit (--omit=dev, level $LEVEL): exit $rc"; echo '```'; tail -n 60 "$RUNNER_TEMP/npm-audit.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          [ "$rc" -ne 0 ] && echo "::warning::npm audit found $LEVEL+ vulnerabilities"
+          exit 0
+
+      - name: pnpm audit
+        if: hashFiles(format('{0}/pnpm-lock.yaml', inputs.working-directory)) != ''
+        env:
+          LEVEL: ${{ inputs.audit-level }}
+        run: |
+          set +e
+          npx --yes pnpm audit --prod --audit-level "$LEVEL" > "$RUNNER_TEMP/pnpm-audit.txt" 2>&1
+          rc=$?
+          { echo "### pnpm audit (--prod, level $LEVEL): exit $rc"; echo '```'; tail -n 60 "$RUNNER_TEMP/pnpm-audit.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          [ "$rc" -ne 0 ] && echo "::warning::pnpm audit found $LEVEL+ vulnerabilities"
+          exit 0
+
+      - name: pip-audit
+        if: >-
+          hashFiles(format('{0}/requirements*.txt', inputs.working-directory)) != '' ||
+          hashFiles(format('{0}/pyproject.toml', inputs.working-directory)) != ''
+        run: |
+          set +e
+          args=()
+          for f in requirements*.txt; do [ -f "$f" ] && args+=(-r "$f"); done
+          [ ${#args[@]} -eq 0 ] && args=(.)
+          uvx pip-audit "${args[@]}" > "$RUNNER_TEMP/pip-audit.txt" 2>&1
+          rc=$?
+          { echo "### pip-audit: exit $rc"; echo '```'; tail -n 60 "$RUNNER_TEMP/pip-audit.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          [ "$rc" -ne 0 ] && echo "::warning::pip-audit found vulnerabilities"
+          exit 0

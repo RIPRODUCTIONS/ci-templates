@@ -1,0 +1,164 @@
+# Reusable CI for Python projects using uv.
+# Steps: uv -> venv -> install (requirements file and/or pyproject) -> ruff -> pytest -> uv pip check.
+name: python
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: 'JSON runner spec, e.g. "ubuntu-latest" or ["self-hosted","linux","x64"]'
+        type: string
+        default: '"ubuntu-latest"'
+      python-version:
+        type: string
+        default: "3.12"
+      working-directory:
+        type: string
+        default: "."
+      requirements:
+        description: Space-separated requirements files to install (missing files are skipped)
+        type: string
+        default: requirements.txt requirements-dev.txt
+      install-project:
+        description: '"auto" installs the project if pyproject.toml exists; "true"/"false" to force'
+        type: string
+        default: auto
+      project-extras:
+        description: Extras for the project install, e.g. "dev,test"
+        type: string
+        default: ""
+      extra-packages:
+        description: Extra packages to install, space-separated
+        type: string
+        default: ""
+      ruff:
+        type: boolean
+        default: true
+      ruff-args:
+        type: string
+        default: check .
+      pytest:
+        type: boolean
+        default: true
+      pytest-args:
+        type: string
+        default: "-q"
+      allow-no-tests:
+        description: Treat "no tests collected" (pytest exit 5) as a pass
+        type: boolean
+        default: false
+      smoke-import:
+        description: Optional module(s) to import as a smoke test, space-separated
+        type: string
+        default: ""
+      pip-check:
+        type: boolean
+        default: true
+      dummy-env:
+        description: Newline-separated KEY=VALUE pairs exported for the job (placeholders only, never real secrets)
+        type: string
+        default: ""
+      timeout-minutes:
+        type: number
+        default: 15
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-python-${{ inputs.working-directory }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: ${{ inputs.python-version }}
+          enable-cache: true
+          cache-dependency-glob: |
+            ${{ inputs.working-directory }}/**/requirements*.txt
+            ${{ inputs.working-directory }}/**/pyproject.toml
+            ${{ inputs.working-directory }}/**/uv.lock
+
+      - name: Random port + dummy env
+        env:
+          DUMMY_ENV: ${{ inputs.dummy-env }}
+        run: |
+          echo "PORT=$(( 20000 + RANDOM % 20000 ))" >> "$GITHUB_ENV"
+          while IFS= read -r line; do
+            [ -z "${line// }" ] && continue
+            case "$line" in \#*) continue ;; esac
+            if ! printf '%s' "$line" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*='; then
+              echo "::error::dummy-env line is not KEY=VALUE"; exit 1
+            fi
+            echo "$line" >> "$GITHUB_ENV"
+          done <<< "$DUMMY_ENV"
+
+      - name: Install
+        env:
+          PYVER: ${{ inputs.python-version }}
+          REQS: ${{ inputs.requirements }}
+          INSTALL_PROJECT: ${{ inputs.install-project }}
+          EXTRAS: ${{ inputs.project-extras }}
+          EXTRA_PKGS: ${{ inputs.extra-packages }}
+          WANT_PYTEST: ${{ inputs.pytest }}
+        run: |
+          uv venv --python "$PYVER" .venv
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          export VIRTUAL_ENV="$PWD/.venv"
+          for f in $REQS; do
+            if [ -f "$f" ]; then uv pip install -r "$f"; else echo "skip $f (not found)"; fi
+          done
+          if [ "$INSTALL_PROJECT" = "true" ] || { [ "$INSTALL_PROJECT" = "auto" ] && [ -f pyproject.toml ]; }; then
+            if [ -n "$EXTRAS" ]; then uv pip install -e ".[$EXTRAS]"; else uv pip install -e .; fi
+          fi
+          pkgs="$EXTRA_PKGS"
+          [ "$WANT_PYTEST" = "true" ] && pkgs="$pkgs pytest"
+          # shellcheck disable=SC2086
+          [ -n "${pkgs// }" ] && uv pip install $pkgs
+          true
+
+      - name: Ruff
+        if: inputs.ruff
+        env:
+          RUFF_ARGS: ${{ inputs.ruff-args }}
+        run: |
+          read -r -a args <<< "$RUFF_ARGS"
+          uvx ruff "${args[@]}"
+
+      - name: Smoke import
+        if: inputs.smoke-import != ''
+        env:
+          MODULES: ${{ inputs.smoke-import }}
+        run: |
+          for m in $MODULES; do python -c "import importlib, sys; importlib.import_module(sys.argv[1]); print('ok', sys.argv[1])" "$m"; done
+
+      - name: Pytest
+        if: inputs.pytest
+        env:
+          PYTEST_ARGS: ${{ inputs.pytest-args }}
+          ALLOW_NO_TESTS: ${{ inputs.allow-no-tests }}
+        run: |
+          set +e
+          # shellcheck disable=SC2086
+          python -m pytest $PYTEST_ARGS
+          rc=$?
+          if [ "$rc" -eq 5 ] && [ "$ALLOW_NO_TESTS" = "true" ]; then
+            echo "::notice::no tests collected (allowed)"; exit 0
+          fi
+          exit "$rc"
+
+      - name: uv pip check
+        if: inputs.pip-check
+        run: uv pip check

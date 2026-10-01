@@ -1,0 +1,115 @@
+# Reusable CI for Expo / React Native apps. Runs on Linux: bundling iOS does not need a Mac.
+# Steps: setup-node -> npm ci -> tsc --noEmit -> expo-doctor -> expo export per platform.
+# The export step catches missing/unresolvable modules (the query-string class of bug).
+name: expo
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: 'JSON runner spec, e.g. "ubuntu-latest" or ["self-hosted","linux","x64"]'
+        type: string
+        default: '"ubuntu-latest"'
+      node-version:
+        type: string
+        default: "22"
+      working-directory:
+        type: string
+        default: "."
+      typecheck:
+        type: boolean
+        default: true
+      expo-doctor:
+        type: boolean
+        default: true
+      expo-doctor-blocking:
+        description: Fail the job when expo-doctor reports problems
+        type: boolean
+        default: true
+      platforms:
+        description: Space-separated platforms to bundle ("" to skip export)
+        type: string
+        default: ios android
+      test-script:
+        description: npm script for tests ("" to skip; skipped if absent)
+        type: string
+        default: test
+      dummy-env:
+        description: Newline-separated KEY=VALUE pairs exported for the job (placeholders only, never real secrets)
+        type: string
+        default: ""
+      timeout-minutes:
+        type: number
+        default: 15
+
+permissions:
+  contents: read
+
+jobs:
+  expo:
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-expo-${{ inputs.working-directory }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      CI: "1"
+      EXPO_NO_TELEMETRY: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Random port + dummy env
+        env:
+          DUMMY_ENV: ${{ inputs.dummy-env }}
+        run: |
+          echo "PORT=$(( 20000 + RANDOM % 20000 ))" >> "$GITHUB_ENV"
+          echo "RCT_METRO_PORT=$(( 40000 + RANDOM % 20000 ))" >> "$GITHUB_ENV"
+          while IFS= read -r line; do
+            [ -z "${line// }" ] && continue
+            case "$line" in \#*) continue ;; esac
+            if ! printf '%s' "$line" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*='; then
+              echo "::error::dummy-env line is not KEY=VALUE"; exit 1
+            fi
+            echo "$line" >> "$GITHUB_ENV"
+          done <<< "$DUMMY_ENV"
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        if: inputs.typecheck
+        run: npx --no-install tsc --noEmit
+
+      - name: expo-doctor
+        if: inputs.expo-doctor
+        continue-on-error: ${{ !inputs.expo-doctor-blocking }}
+        run: npx --yes expo-doctor
+
+      - name: Test
+        if: inputs.test-script != ''
+        env:
+          SCRIPT: ${{ inputs.test-script }}
+        run: npm run "$SCRIPT" --if-present
+
+      - name: expo export
+        if: inputs.platforms != ''
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          for p in $PLATFORMS; do
+            echo "::group::expo export --platform $p"
+            npx --no-install expo export --platform "$p" --output-dir "$RUNNER_TEMP/expo-dist-$p"
+            echo "::endgroup::"
+          done

@@ -1,0 +1,108 @@
+# Reusable CI for pnpm projects / workspaces.
+# Steps: pnpm -> setup-node -> pnpm install --frozen-lockfile -> lint -> typecheck -> test -> build.
+# pnpm version comes from package.json "packageManager" unless pnpm-version is set.
+name: pnpm
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: 'JSON runner spec, e.g. "ubuntu-latest" or ["self-hosted","linux","x64"]'
+        type: string
+        default: '"ubuntu-latest"'
+      node-version:
+        type: string
+        default: "22"
+      pnpm-version:
+        description: pnpm version ("" = read packageManager from package.json)
+        type: string
+        default: ""
+      working-directory:
+        type: string
+        default: "."
+      recursive:
+        description: Run scripts in every workspace package (pnpm -r)
+        type: boolean
+        default: false
+      lint-script:
+        type: string
+        default: lint
+      typecheck-script:
+        type: string
+        default: typecheck
+      test-script:
+        type: string
+        default: test
+      build-script:
+        type: string
+        default: build
+      dummy-env:
+        description: Newline-separated KEY=VALUE pairs exported for the job (placeholders only, never real secrets)
+        type: string
+        default: ""
+      timeout-minutes:
+        type: number
+        default: 15
+
+permissions:
+  contents: read
+
+jobs:
+  pnpm:
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-pnpm-${{ inputs.working-directory }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ inputs.pnpm-version }}
+          package_json_file: ${{ inputs.working-directory }}/package.json
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+          cache-dependency-path: ${{ inputs.working-directory }}/pnpm-lock.yaml
+
+      - name: Random port + dummy env
+        env:
+          DUMMY_ENV: ${{ inputs.dummy-env }}
+        run: |
+          echo "PORT=$(( 20000 + RANDOM % 20000 ))" >> "$GITHUB_ENV"
+          while IFS= read -r line; do
+            [ -z "${line// }" ] && continue
+            case "$line" in \#*) continue ;; esac
+            if ! printf '%s' "$line" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*='; then
+              echo "::error::dummy-env line is not KEY=VALUE"; exit 1
+            fi
+            echo "$line" >> "$GITHUB_ENV"
+          done <<< "$DUMMY_ENV"
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Run scripts
+        env:
+          RECURSIVE: ${{ inputs.recursive }}
+          LINT: ${{ inputs.lint-script }}
+          TYPECHECK: ${{ inputs.typecheck-script }}
+          TEST: ${{ inputs.test-script }}
+          BUILD: ${{ inputs.build-script }}
+        run: |
+          r=""; [ "$RECURSIVE" = "true" ] && r="-r"
+          for s in "$LINT" "$TYPECHECK" "$TEST" "$BUILD"; do
+            [ -z "$s" ] && continue
+            echo "::group::pnpm $r run $s"
+            pnpm $r run --if-present "$s"
+            echo "::endgroup::"
+          done
