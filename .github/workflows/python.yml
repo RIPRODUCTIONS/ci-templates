@@ -84,7 +84,10 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: ${{ inputs.python-version }}
-          enable-cache: true
+          # Self-hosted runners keep UV_CACHE_DIR on local disk across jobs, and that dir is shared by
+          # every repo's runner, so the Actions cache round-tripped it whole (2.6 GB restore; jobs
+          # cancelled at the timeout while untarring, 2026-10-10). Cache only on GitHub-hosted runners.
+          enable-cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-glob: |
             ${{ inputs.working-directory }}/**/requirements*.txt
             ${{ inputs.working-directory }}/**/pyproject.toml
