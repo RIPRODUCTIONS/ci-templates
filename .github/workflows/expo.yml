@@ -40,7 +40,9 @@ on:
         default: ""
       timeout-minutes:
         type: number
-        default: 15
+        # 30, not 15: on the shared VPS runner under load, checkout + setup alone has taken ~13 min
+        # and green runs were cancelled at 15 (2026-10-07: focusbuddy #17, adhd #22, wingman-coach #10).
+        default: 30
 
 permissions:
   contents: read
