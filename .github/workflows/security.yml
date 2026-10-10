@@ -25,7 +25,9 @@ on:
         default: high
       timeout-minutes:
         type: number
-        default: 15
+        # 30, not 15: the VPS host-wide CI slot cap (/opt/ops/ci-slot-hook.sh, 2 slots) makes jobs wait
+        # for a slot inside the job, and that wait counts against this timeout (2026-10-10).
+        default: 30
 
 permissions:
   contents: read
