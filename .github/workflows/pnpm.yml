@@ -73,7 +73,10 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ inputs.node-version }}
-          cache: pnpm
+          # Self-hosted runners keep the package cache on local disk across jobs, shared by every repo's
+          # runner, so saving it to the Actions cache uploaded it whole (487 MB at ~280 KB/s home upload;
+          # jobs cancelled at the timeout in Post setup-node, 2026-10-13). Cache only on GitHub-hosted.
+          cache: ${{ runner.environment == 'github-hosted' && 'pnpm' || '' }}
           cache-dependency-path: ${{ inputs.working-directory }}/pnpm-lock.yaml
 
       - name: Random port + dummy env
