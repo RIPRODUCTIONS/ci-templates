@@ -72,7 +72,9 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     concurrency:
-      group: ${{ github.workflow }}-${{ github.ref }}-python-${{ inputs.working-directory }}
+      # python-version is part of the key: a caller that runs a version matrix as two jobs (WingMan
+      # ci + ci-py311) otherwise shares one group, and the second cancels the first at 0s.
+      group: ${{ github.workflow }}-${{ github.ref }}-python-${{ inputs.working-directory }}-${{ inputs.python-version }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     defaults:
       run:
